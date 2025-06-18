@@ -1,45 +1,59 @@
-# agent.py
-
-import json
-import threading
+import requests
+import subprocess
 import time
-import os
+import signal
+from config import SERVER_URL, WORKER_NAME, XMRIG_PATH
 
-from config import XMRIG_PATH
-from utils import fetch_config, report_status
-from miner_runner import run_miner
+miner_process = None
 
-def build_miner_command(config):
+def fetch_config():
+    url = f"{SERVER_URL}/api/config?worker={WORKER_NAME}"
+    print(f"📡 Fetching config from {url}")
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"❌ Failed to fetch config: {e}")
+        return None
+
+def start_miner(config):
+    global miner_process
+    if miner_process:
+        print("🛑 Stopping existing miner...")
+        miner_process.terminate()
+        miner_process.wait()
+        time.sleep(1)
+
     cmd = [
         XMRIG_PATH,
         "-a", config["algo"],
         "-o", config["pool"],
         "-u", config["wallet"],
-        "-p", config.get("worker_id", "cpu-agent"),
-        "--donate-level=0"
+        "-p", config["worker"],
+        "--threads", str(config["threads"])
     ]
-    return cmd
+    print("⛏️ Starting miner...")
+    miner_process = subprocess.Popen(cmd)
 
-def periodic_report():
+def main():
     while True:
-        status = {
-            "status": "running",
-            "uptime": time.time()
-        }
-        report_status(status)
-        time.sleep(30)
+        config = fetch_config()
+        if config:
+            start_miner(config)
+        else:
+            print("⚠️ Using existing config (if any).")
+        time.sleep(300)  # kiểm tra mỗi 5 phút
+
+def handle_exit(sig, frame):
+    global miner_process
+    print("\n🛑 Exiting agent...")
+    if miner_process:
+        miner_process.terminate()
+        miner_process.wait()
+    exit(0)
 
 if __name__ == "__main__":
-    config = fetch_config()
-    if not config:
-        print("❌ Could not fetch miner config. Exiting.")
-        exit(1)
-
-    miner_cmd = build_miner_command(config)
-
-    # Bắt đầu luồng gửi trạng thái
-    t = threading.Thread(target=periodic_report, daemon=True)
-    t.start()
-
-    # Chạy miner
-    run_miner(miner_cmd)
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+    main()
